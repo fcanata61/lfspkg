@@ -1,0 +1,2 @@
+# lfspkg
+Gerenciador de pacotes 
