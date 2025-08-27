@@ -1,0 +1,251 @@
+TUTORIAL COMPLETO — LFSPKG.SH (GERENCIADOR POSIX SOURCE-BASED PARA LFS)
+========================================================================
+
+1) VISÃO GERAL
+--------------
+O `lfspkg.sh` é um gerenciador de pacotes **source-based** e **compatível POSIX** pensado para gerenciar um Linux From Scratch (LFS). Ele:
+- Lê **recipes** em `/repo/{base,x11,extras,desktop}/<pacote>/<pacote-versao>/PKGFILE`;
+- Baixa/extrai fontes, **aplica patches automaticamente** após descompactar;
+- Compila e **empacota com `DESTDIR`** (sem tocar no sistema durante a construção);
+- Suporta **fakeroot** para preservar metadados de arquivos quando não executado como root;
+- Gera pacotes `tar.xz` (ou `tar.gz` como fallback) em `/var/cache/lfspkg/packages`;
+- Mantém **log**, **spinner** e **saída colorida**, tudo configurável por variáveis;
+- Mantém **registro de instalados** e **manifesto de arquivos**;
+- Sincroniza automaticamente com **Git** (opcional);
+- Possui comando para **rebuild de todo o sistema** (“respirar”).
+
+2) INSTALAÇÃO RÁPIDA
+--------------------
+Salve o script (do canvas) como `lfspkg.sh` e torne-o executável:
+    chmod +x lfspkg.sh
+
+Opcionalmente ajuste variáveis no topo do arquivo (p.ex. `REPO_ROOT`, `SRC_CACHE`, `ARTIFACTS_DIR` etc). Depois, inicialize a estrutura:
+    sudo ./lfspkg.sh init
+
+Isso garante que existam:
+    /repo/{base,x11,extras,desktop}
+    /var/cache/lfspkg/sources      (SRC_CACHE)
+    /var/cache/lfspkg/packages     (ARTIFACTS_DIR)
+    /var/tmp/lfspkg/{build,pkg}    (BUILD_ROOT/PKGROOT)
+    /var/log/lfspkg                (LOG_DIR)
+    /var/lib/lfspkg                (DB_DIR)
+
+3) ESTRUTURA DE REPOSITÓRIO
+---------------------------
+Cada recipe vive em um diretório com a versão:
+    /repo/base/hello/hello-2.12/PKGFILE
+    /repo/base/binutils/binutils-2.43/PKGFILE
+    /repo/base/gcc/gcc-13.2.0/PKGFILE
+
+Patches (se houver) vão em `patches/`:
+    /repo/base/gcc/gcc-13.2.0/patches/sua-correção.patch
+
+4) FORMATO DO PKGFILE (TEMPLATE)
+--------------------------------
+Um `PKGFILE` é um shell script simples. Variáveis e hooks mais comuns:
+
+    NAME=hello
+    VERSION=2.12
+    SOURCE_URL=https://ftp.gnu.org/gnu/hello/hello-$VERSION.tar.xz
+    SOURCE_SHA256=<opcional: hash>
+
+    CONFIGURE="./configure --prefix=/usr"
+    MAKEFLAGS="-j$(nproc)"
+    PATCHES=""   # lista de patches (arquivos em ./patches)
+
+    PREPARE() { :; }
+    BUILD()    { :; }
+    INSTALL()  { :; }
+
+Observações:
+- Se `BUILD/INSTALL` não forem definidos, o gerenciador usa **fluxo padrão**:
+  - `std_build`: roda `./configure` se existir e depois `make`;
+  - `std_install`: roda `make DESTDIR="$DESTDIR" install`.
+- `PATCHES`, se definidos, são aplicados **automaticamente** após extração.
+
+5) VARIÁVEIS ÚTEIS
+------------------
+- `REPO_ROOT=/repo`
+- `REPO_TREES="base x11 extras desktop"`
+- `SRC_CACHE=/var/cache/lfspkg/sources`
+- `BUILD_ROOT=/var/tmp/lfspkg/build`
+- `PKGROOT=/var/tmp/lfspkg/pkg`
+- `ARTIFACTS_DIR=/var/cache/lfspkg/packages`
+- `LOG_DIR=/var/log/lfspkg`
+- `DB_DIR=/var/lib/lfspkg`
+- `PKG_COMPRESSOR=xz`
+- `FAKEROOT_BIN=fakeroot`
+- `GIT_AUTO_COMMIT=1`
+- `NO_COLOR=1`
+
+6) COMANDOS DO GERENCIADOR
+--------------------------
+    ./lfspkg.sh init
+    ./lfspkg.sh list-recipes
+    ./lfspkg.sh list-installed
+    ./lfspkg.sh build base/hello/hello-2.12
+    ./lfspkg.sh install-pkg /var/cache/lfspkg/packages/hello-2.12.tar.xz
+    ./lfspkg.sh rebuild-all
+
+7) LOGS E REGISTROS
+-------------------
+- Log global: `/var/log/lfspkg/YYYYMMDD-HHMMSS.log`.
+- Log por pacote: `/var/log/lfspkg/<nome>-<versao>.log`.
+- Registro: `/var/lib/lfspkg/installed.db`.
+- Manifestos: `/var/lib/lfspkg/<nome>-<versao>.files`.
+
+8) GIT SYNC
+-----------
+Ative com:
+    cd /repo && git init
+    cd /var/cache/lfspkg/packages && git init
+    export GIT_AUTO_COMMIT=1
+
+9) EXEMPLOS DE RECIPES
+----------------------
+
+(1) hello:
+-----------
+# /repo/base/hello/hello-2.12/PKGFILE
+NAME=hello
+VERSION=2.12
+SOURCE_URL=https://ftp.gnu.org/gnu/hello/hello-$VERSION.tar.xz
+SOURCE_SHA256=<hash>
+CONFIGURE="./configure --prefix=/usr"
+MAKEFLAGS="-j$(nproc)"
+INSTALL() { make DESTDIR="$DESTDIR" install; }
+
+(2) binutils:
+--------------
+# /repo/base/binutils/binutils-2.43/PKGFILE
+NAME=binutils
+VERSION=2.43
+SOURCE_URL=https://ftp.gnu.org/gnu/binutils/binutils-$VERSION.tar.xz
+SOURCE_SHA256=<hash>
+CONFIGURE="../configure --prefix=/usr --enable-gold --enable-ld=default --enable-plugins --disable-werror"
+MAKEFLAGS="-j$(nproc)"
+
+BUILD() {
+  mkdir -p build && cd build
+  eval $CONFIGURE
+  make $MAKEFLAGS
+}
+
+INSTALL() {
+  cd build
+  make DESTDIR="$DESTDIR" install
+}
+
+(3) gcc (LFS puro):
+-------------------
+# /repo/base/gcc/gcc-13.2.0/PKGFILE
+NAME=gcc
+VERSION=13.2.0
+SOURCE_URL=https://ftp.gnu.org/gnu/gcc/gcc-$VERSION/gcc-$VERSION.tar.xz
+SOURCE_SHA256=<hash>
+
+GMP_URL=https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+MPFR_URL=https://www.mpfr.org/mpfr-4.2.1/mpfr-4.2.1.tar.xz
+MPC_URL=https://ftp.gnu.org/gnu/mpc/mpc-1.3.1.tar.gz
+ISL_URL=https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.25.tar.xz
+
+CONFIGURE="../configure \
+  --prefix=/usr \
+  --enable-languages=c,c++ \
+  --disable-multilib \
+  --disable-bootstrap \
+  --enable-default-pie \
+  --enable-default-ssp"
+
+MAKEFLAGS="-j$(nproc)"
+PATCHES=""
+
+PREPARE() {
+  cd "$WRKSRC/gcc-$VERSION" || exit 1
+  tar -xf "$SRC_CACHE/$(basename $GMP_URL)"  && mv -v gmp-* gmp
+  tar -xf "$SRC_CACHE/$(basename $MPFR_URL)" && mv -v mpfr-* mpfr
+  tar -xf "$SRC_CACHE/$(basename $MPC_URL)"  && mv -v mpc-* mpc
+  tar -xf "$SRC_CACHE/$(basename $ISL_URL)"  && mv -v isl-* isl
+}
+
+BUILD() {
+  mkdir -p build && cd build
+  eval $CONFIGURE
+  make $MAKEFLAGS
+}
+
+INSTALL() {
+  cd build
+  make DESTDIR="$DESTDIR" install
+  ln -sv gcc "$DESTDIR/usr/bin/cc"
+}
+
+10) COMO OBTER O SHA256
+-----------------------
+    sha256sum /var/cache/lfspkg/sources/hello-2.12.tar.xz
+
+11) PATCHES
+-----------
+- Coloque-os em `./patches/`.
+- Liste em `PATCHES="fix.patch outro.patch"`.
+- Aplicação é automática.
+
+12) DESTDIR + FAKEROOT
+----------------------
+- Instalação sempre via DESTDIR.
+- `fakeroot` usado quando não-root.
+
+13) PACOTES
+-----------
+Gerados em:
+    /var/cache/lfspkg/packages/<nome>-<versao>.tar.xz
+Instalação:
+    sudo ./lfspkg.sh install-pkg /var/cache/lfspkg/packages/hello-2.12.tar.xz
+
+14) REBUILD ALL
+---------------
+    ./lfspkg.sh rebuild-all
+
+15) DICAS
+---------
+- Use MAKEFLAGS="-j$(nproc)".
+- Mude PKG_COMPRESSOR para gzip se preferir.
+- NO_COLOR=1 para saída sem cores.
+
+16) DESINSTALAÇÃO MANUAL
+------------------------
+Veja o manifesto:
+    less /var/lib/lfspkg/<nome>-<versao>.files
+E remova manualmente os arquivos listados.
+
+17) PROBLEMAS COMUNS
+--------------------
+- Checksum falhou: ajuste SOURCE_SHA256.
+- Patch falhou: confira nível -p1.
+- configure não existe: defina BUILD() custom.
+- Sem fakeroot: rode INSTALL como root.
+
+18) WORKFLOW RECOMENDADO
+------------------------
+    sudo ./lfspkg.sh init
+    mkdir -p /repo/base/hello/hello-2.12
+    $EDITOR /repo/base/hello/hello-2.12/PKGFILE
+    ./lfspkg.sh build base/hello/hello-2.12
+    sudo ./lfspkg.sh install-pkg /var/cache/lfspkg/packages/hello-2.12.tar.xz
+    ./lfspkg.sh list-installed
+    ./lfspkg.sh rebuild-all
+
+19) SEGURANÇA
+-------------
+- Recipes são shell: confie apenas em fontes seguras.
+- Use VM/chroot para toolchain crítica.
+- Versione `/repo` e pacotes.
+
+20) FUTURO
+----------
+- Adicionar recipes de glibc/musl, coreutils etc.
+- Metapacotes.
+- Implementar `remove`.
+
+FIM
+===
