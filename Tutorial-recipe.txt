@@ -1,0 +1,236 @@
+MANUAL DE RECIPES — LFSPKG.SH
+=============================
+
+Este documento descreve em detalhes o formato e os recursos suportados 
+pelos **recipes** (arquivos `PKGFILE`) usados no gerenciador `lfspkg.sh`.
+
+----------------------------------------------------------------------
+1) O QUE É UM RECIPE?
+----------------------------------------------------------------------
+Um *recipe* é um shell script (compatível POSIX) que define como:
+- baixar e extrair o código-fonte,
+- aplicar patches opcionais,
+- configurar, compilar e instalar um programa,
+- empacotar o resultado para instalação.
+
+Cada recipe vive dentro de um diretório:
+    /repo/<tree>/<pacote>/<pacote-versao>/PKGFILE
+
+Exemplo:
+    /repo/base/hello/hello-2.12/PKGFILE
+
+O gerenciador lê esse arquivo e executa suas funções declaradas.
+
+----------------------------------------------------------------------
+2) VARIÁVEIS SUPORTADAS
+----------------------------------------------------------------------
+
+**Nome e versão do pacote**
+    NAME        → Nome do pacote (ex: "gcc")
+    VERSION     → Versão do pacote (ex: "13.2.0")
+
+**Fontes principais**
+    SOURCE_URL      → URL do tarball de fontes principal
+    SOURCE_SHA256   → Checksum esperado (pode ser omitido)
+
+**Fontes adicionais (útil em gcc estilo LFS)**
+    Defina quantos quiser, ex.:
+        GMP_URL=...
+        MPFR_URL=...
+        MPC_URL=...
+        ISL_URL=...
+
+Esses extras podem ser tratados no hook PREPARE().
+
+**Configuração do build**
+    CONFIGURE   → Linha de configuração para ./configure
+                  (usada no build padrão)
+    MAKEFLAGS   → Opções para `make` (ex: "-j$(nproc)")
+
+**Patches**
+    PATCHES     → Lista de patches em ./patches/
+                  (ex: "fix-paths.patch gcc-glibc.patch")
+
+----------------------------------------------------------------------
+3) HOOKS (FUNÇÕES OPCIONAIS)
+----------------------------------------------------------------------
+
+Um PKGFILE pode definir as seguintes funções (todas opcionais):
+
+PREPARE()
+---------
+Executada após extrair os fontes.
+Use para aplicar patches ou incorporar dependências.
+Exemplo:
+    PREPARE() {
+        cd "$WRKSRC"
+        for p in $PATCHES; do
+            patch -Np1 -i "$PATCHDIR/$p"
+        done
+    }
+
+BUILD()
+-------
+Compila o pacote.
+Se não definido, o padrão é:
+    ./configure ... && make
+Exemplo customizado:
+    BUILD() {
+        mkdir -p build && cd build
+        ../configure --prefix=/usr --enable-foo
+        make $MAKEFLAGS
+    }
+
+INSTALL()
+---------
+Instala no diretório fake root ($DESTDIR).
+Se não definido, o padrão é:
+    make DESTDIR="$DESTDIR" install
+Exemplo customizado:
+    INSTALL() {
+        cd build
+        make DESTDIR="$DESTDIR" install
+        ln -sv gcc "$DESTDIR/usr/bin/cc"
+    }
+
+----------------------------------------------------------------------
+4) VARIÁVEIS DE AMBIENTE DISPONÍVEIS
+----------------------------------------------------------------------
+
+Durante o build, as seguintes variáveis estão sempre definidas:
+
+- $NAME        Nome do pacote
+- $VERSION     Versão do pacote
+- $WRKSRC      Diretório de trabalho com fontes extraídos
+- $SRC_CACHE   Diretório cache de tarballs (ex: /var/cache/lfspkg/sources)
+- $DESTDIR     Diretório fake root onde a instalação acontece
+- $PATCHDIR    Diretório de patches dentro do recipe
+- $BUILD_ROOT  Raiz de builds temporários
+- $PKGROOT     Raiz de staging de pacotes antes de empacotar
+
+----------------------------------------------------------------------
+5) FLUXO DE EXECUÇÃO
+----------------------------------------------------------------------
+
+1. Baixar tarball(s) para $SRC_CACHE
+2. Verificar SHA256 (se definido)
+3. Extrair em $WRKSRC
+4. Rodar PREPARE() (aplica patches, embute libs extras, etc.)
+5. Rodar BUILD() ou build padrão
+6. Rodar INSTALL() ou install padrão
+7. Gerar pacote tar.xz no $ARTIFACTS_DIR
+
+----------------------------------------------------------------------
+6) EXEMPLOS COMPLETOS
+----------------------------------------------------------------------
+
+(A) Hello World simples
+------------------------
+NAME=hello
+VERSION=2.12
+SOURCE_URL=https://ftp.gnu.org/gnu/hello/hello-$VERSION.tar.xz
+SOURCE_SHA256=<hash>
+CONFIGURE="./configure --prefix=/usr"
+MAKEFLAGS="-j$(nproc)"
+INSTALL() { make DESTDIR="$DESTDIR" install; }
+
+(B) Binutils
+------------
+NAME=binutils
+VERSION=2.43
+SOURCE_URL=https://ftp.gnu.org/gnu/binutils/binutils-$VERSION.tar.xz
+SOURCE_SHA256=<hash>
+CONFIGURE="../configure --prefix=/usr --enable-gold --enable-ld=default --enable-plugins --disable-werror"
+MAKEFLAGS="-j$(nproc)"
+
+BUILD() {
+    mkdir -p build && cd build
+    eval $CONFIGURE
+    make $MAKEFLAGS
+}
+
+INSTALL() {
+    cd build
+    make DESTDIR="$DESTDIR" install
+}
+
+(C) GCC estilo LFS puro
+-----------------------
+NAME=gcc
+VERSION=13.2.0
+SOURCE_URL=https://ftp.gnu.org/gnu/gcc/gcc-$VERSION/gcc-$VERSION.tar.xz
+SOURCE_SHA256=<hash>
+
+GMP_URL=https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+MPFR_URL=https://www.mpfr.org/mpfr-4.2.1/mpfr-4.2.1.tar.xz
+MPC_URL=https://ftp.gnu.org/gnu/mpc/mpc-1.3.1.tar.gz
+ISL_URL=https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.25.tar.xz
+
+CONFIGURE="../configure \
+  --prefix=/usr \
+  --enable-languages=c,c++ \
+  --disable-multilib \
+  --disable-bootstrap \
+  --enable-default-pie \
+  --enable-default-ssp"
+
+MAKEFLAGS="-j$(nproc)"
+PATCHES=""
+
+PREPARE() {
+    cd "$WRKSRC/gcc-$VERSION" || exit 1
+    tar -xf "$SRC_CACHE/$(basename $GMP_URL)"  && mv -v gmp-* gmp
+    tar -xf "$SRC_CACHE/$(basename $MPFR_URL)" && mv -v mpfr-* mpfr
+    tar -xf "$SRC_CACHE/$(basename $MPC_URL)"  && mv -v mpc-* mpc
+    tar -xf "$SRC_CACHE/$(basename $ISL_URL)"  && mv -v isl-* isl
+}
+
+BUILD() {
+    mkdir -p build && cd build
+    eval $CONFIGURE
+    make $MAKEFLAGS
+}
+
+INSTALL() {
+    cd build
+    make DESTDIR="$DESTDIR" install
+    ln -sv gcc "$DESTDIR/usr/bin/cc"
+}
+
+----------------------------------------------------------------------
+7) PATCHES
+----------------------------------------------------------------------
+- Devem estar em: /repo/<tree>/<pkg>/<ver>/patches/
+- Declare no PKGFILE:
+    PATCHES="fix1.patch fix2.patch"
+- Serão aplicados automaticamente no PREPARE() padrão.
+
+----------------------------------------------------------------------
+8) DICAS PARA MANUTENÇÃO
+----------------------------------------------------------------------
+- Sempre definir NAME e VERSION.
+- Preferir SHA256 para integridade.
+- Manter CONFIGURE limpo; evite hardcodes de /usr/local.
+- Centralizar patches em PATCHES="".
+- Usar PREPARE() para incorporar dependências extras (caso gcc).
+- TESTAR sempre dentro de um chroot ou VM se for pacote crítico (glibc, gcc, binutils).
+
+----------------------------------------------------------------------
+9) LIMITAÇÕES ATUAIS
+----------------------------------------------------------------------
+- Sem suporte a dependências automáticas (instalação é manual).
+- Remoção de pacotes não implementada (usar manifestos).
+- Não lida com cross-compilação automaticamente (útil em bootstraps).
+- Não faz rollback de instalação.
+
+----------------------------------------------------------------------
+10) CONCLUSÃO
+----------------------------------------------------------------------
+O formato de recipes do `lfspkg.sh` é minimalista e direto:
+- Variáveis descrevem fontes e flags;
+- Funções (PREPARE, BUILD, INSTALL) controlam o ciclo de vida;
+- O gerenciador cuida do download, extração, logging, empacotamento 
+  e instalação com DESTDIR + fakeroot.
+
+A flexibilidade vem do fato de ser apenas shell script: qualquer 
+lógica necessária pode ser embutida no PKGFILE.
